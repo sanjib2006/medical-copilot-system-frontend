@@ -1,6 +1,6 @@
 import streamlit as st
 from pymongo import MongoClient
-from database import patients, vitals
+from database import patients, vitals, alerts
 import pandas as pd
 
 @st.cache_resource
@@ -202,6 +202,74 @@ with tab2:
                 st.warning("No vitals recorded for this patient yet.")
 
 with tab3:
-    st.header("Active Alerts")
-    st.info("This section will display ICU deterioration alerts and interventions.")
-    st.write("Active alerts will be listed here.")
+    st.header("Active Alerts & Interventions")
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Set Threshold Rules")
+        
+        patients_list = patients.get_all_patients(db)
+        
+        if patients_list:
+            patient_map = {p["patient_id"]: f"{p['first_name']} {p['last_name']}" for p in patients_list}
+            
+            selected_rule_patient = st.selectbox(
+                "Select Patient",
+                options=list(patient_map.keys()),
+                format_func=lambda x: patient_map[x],
+                key="threshold_patient"
+            )
+
+            with st.form("threshold_form"):
+                param = st.selectbox("Parameter", ["heart_rate", "systolic_bp", "diastolic_bp", "temperature"])
+                min_v = st.number_input("Min Safe Value", value=60.0)
+                max_v = st.number_input("Max Safe Value", value=100.0)
+                submit_rule = st.form_submit_button("Save Rule")
+
+            if submit_rule:
+                alerts.set_threshold(db, selected_rule_patient, param, min_v, max_v)
+                st.success(f"Rule saved for {param}.")
+                
+                query_display = f"""db.threshold_rules.update_one(
+    {{"patient_id": "{selected_rule_patient}", "parameter": "{param}"}},
+    {{"$set": {{"min_val": {min_v}, "max_val": {max_v}}}}},
+    upsert=True
+)"""
+                st.info("Backend Query Executed (Upsert):")
+                st.code(query_display, language="javascript")
+        else:
+            st.warning("Please admit a patient first.")
+
+    with col2:
+        st.subheader("Deterioration Alerts")
+        
+        active_alerts = alerts.get_active_alerts(db)
+
+        if not active_alerts:
+            st.success("No active alerts. All patients are currently stable.")
+        else:
+            for alert in active_alerts:
+                with st.expander(f"🚨 {alert['severity'].upper()} ALERT: {alert['alert_type']} | Patient: {alert['patient_id']}", expanded=True):
+                    st.write(f"**Message:** {alert['message']}")
+                    st.write(f"**Time:** {alert['alert_datetime']}")
+                    
+                    with st.form(f"resolve_form_{alert['_id']}"):
+                        i_type = st.selectbox("Intervention Type", ["Administer Medication", "Adjust Ventilator", "Call Physician", "Other"])
+                        notes = st.text_input("Clinical Notes")
+                        resolve_btn = st.form_submit_button("Log Intervention & Resolve")
+                        
+                    if resolve_btn:
+                        alerts.log_intervention(db, alert["_id"], i_type, notes)
+                        st.success("Intervention logged and alert resolved.")
+                        
+                        push_query = f"""db.deterioration_alerts.update_one(
+    {{"_id": ObjectId("{alert['_id']}")}},
+    {{
+        "$push": {{"interventions": {{"intervention_type": "{i_type}", "notes": "{notes}"}}}},
+        "$set": {{"status": "Resolved"}}
+    }}
+)"""
+                        st.info("Backend Query Executed ($push array update):")
+                        st.code(push_query, language="javascript")
+                        st.rerun()
