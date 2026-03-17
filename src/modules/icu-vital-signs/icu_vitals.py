@@ -168,6 +168,17 @@ with tab2:
 
                 st.code(f"db.vital_signs.insert_one({doc})", language="json")
 
+                current_vitals = {
+                    "heart_rate": hr,
+                    "systolic_bp": sys_bp,
+                    "diastolic_bp": dia_bp,
+                    "temperature": temp,
+                    "ews_score": score,
+                }
+                triggered = alerts.evaluate_alert(db, selected_patient, inserted_id, current_vitals)
+                if triggered:
+                    st.warning(f"⚠️ {len(triggered)} deterioration alert(s) triggered. Check the Active Alerts tab.")
+
             except Exception as e:
                 st.error(f"Error saving vitals: {e}")
 
@@ -223,8 +234,15 @@ with tab3:
 
             with st.form("threshold_form"):
                 param = st.selectbox("Parameter", ["heart_rate", "systolic_bp", "diastolic_bp", "temperature"])
-                min_v = st.number_input("Min Safe Value", value=60.0)
-                max_v = st.number_input("Max Safe Value", value=100.0)
+                defaults = {
+                    "heart_rate": (60.0, 100.0),
+                    "systolic_bp": (90.0, 140.0),
+                    "diastolic_bp": (60.0, 90.0),
+                    "temperature": (36.0, 38.5),
+                }
+                default_min, default_max = defaults.get(param, (0.0, 100.0))
+                min_v = st.number_input("Min Safe Value", value=default_min)
+                max_v = st.number_input("Max Safe Value", value=default_max)
                 submit_rule = st.form_submit_button("Save Rule")
 
             if submit_rule:
@@ -243,7 +261,10 @@ with tab3:
 
     with col2:
         st.subheader("Deterioration Alerts")
-        
+
+        if st.button("🔄 Refresh Alerts"):
+            st.rerun()
+
         active_alerts = alerts.get_active_alerts(db)
 
         if not active_alerts:
