@@ -2,3 +2,6 @@ streamlit
 pymongo
 dnspython
 pandas
+fastapi
+uvicorn[standard]
+pydantic
