@@ -19,6 +19,17 @@ def _now_utc() -> datetime:
     return datetime.utcnow().replace(tzinfo=timezone.utc)
 
 
+def _serialize_doc(doc):
+    """Recursively convert all ObjectId values to strings so FastAPI can JSON-encode them."""
+    if isinstance(doc, dict):
+        return {k: _serialize_doc(v) for k, v in doc.items()}
+    if isinstance(doc, list):
+        return [_serialize_doc(v) for v in doc]
+    if isinstance(doc, ObjectId):
+        return str(doc)
+    return doc
+
+
 def ensure_indexes(db):
     db.icu_deterioration_events.create_index(
         [("patient_id", ASCENDING), ("status", ASCENDING)]
@@ -136,9 +147,7 @@ def get_active_deterioration_events(
     docs = list(
         db.icu_deterioration_events.find(q).sort("triggered_at", DESCENDING)
     )
-    for d in docs:
-        d["_id"] = str(d["_id"])
-    return docs
+    return [_serialize_doc(d) for d in docs]
 
 
 def get_deterioration_history(
@@ -151,9 +160,7 @@ def get_deterioration_history(
         .sort("triggered_at", DESCENDING)
         .limit(limit)
     )
-    for d in docs:
-        d["_id"] = str(d["_id"])
-    return docs
+    return [_serialize_doc(d) for d in docs]
 
 
 def escalate_event(
@@ -217,7 +224,7 @@ def resolve_event(
 def get_event_by_id(db, event_id: str) -> Optional[Dict]:
     doc = db.icu_deterioration_events.find_one({"_id": ObjectId(event_id)})
     if doc:
-        doc["_id"] = str(doc["_id"])
+        doc = _serialize_doc(doc)
     return doc
 
 

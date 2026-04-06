@@ -17,6 +17,17 @@ def _now_utc() -> datetime:
     return datetime.utcnow().replace(tzinfo=timezone.utc)
 
 
+def _serialize_doc(doc):
+    """Recursively convert all ObjectId values to strings so FastAPI can JSON-encode them."""
+    if isinstance(doc, dict):
+        return {k: _serialize_doc(v) for k, v in doc.items()}
+    if isinstance(doc, list):
+        return [_serialize_doc(v) for v in doc]
+    if isinstance(doc, ObjectId):
+        return str(doc)
+    return doc
+
+
 # ---------------------------------------------------------------------------
 # Indexes
 # ---------------------------------------------------------------------------
@@ -141,9 +152,7 @@ def get_active_alerts(db, patient_id: Optional[Any] = None) -> List[Dict]:
         q["patient_id"] = patient_id
 
     docs = list(db.deterioration_alerts.find(q).sort("alert_datetime", DESCENDING))
-    for d in docs:
-        d["_id"] = str(d["_id"])
-    return docs
+    return [_serialize_doc(d) for d in docs]
 
 
 def acknowledge_alert(

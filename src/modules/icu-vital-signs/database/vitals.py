@@ -321,3 +321,90 @@ def predict_trend(db, patient_id: Any) -> Dict[str, Any]:
         "hours_analyzed": 12,
         "datapoints": n
     }
+
+
+def update_vital_sign(db, vital_id: Any, update_fields: Dict[str, Any]) -> int:
+    result = db.vital_signs.update_one(
+        {"_id": ObjectId(vital_id)},
+        {"$set": update_fields}
+    )
+    return result.modified_count
+
+
+def delete_vital_sign(db, vital_id: Any) -> int:
+    result = db.vital_signs.delete_one({"_id": ObjectId(vital_id)})
+    return result.deleted_count
+
+
+def list_all_vitals(db, patient_id: Optional[Any] = None, limit: int = 50) -> List[Dict]:
+    q = {}
+    if patient_id:
+        q["patient_id"] = patient_id
+    docs = list(db.vital_signs.find(q).sort("recorded_datetime", -1).limit(limit))
+    for d in docs:
+        d["_id"] = str(d["_id"])
+    return docs
+
+
+def get_critical_patients_view(db) -> List[Dict]:
+    pipeline = [
+        {
+            "$match": {
+                "$or": [
+                    {"news2_score": {"$gte": 7}},
+                    {"multi_organ_dysfunction": True}
+                ]
+            }
+        },
+        {"$sort": {"recorded_datetime": -1}},
+        {
+            "$group": {
+                "_id": "$patient_id",
+                "latest_vital_id": {"$first": "$_id"},
+                "recorded_datetime": {"$first": "$recorded_datetime"},
+                "news2_score": {"$first": "$news2_score"},
+                "sofa_score": {"$first": "$sofa_score"},
+                "heart_rate": {"$first": "$heart_rate"},
+                "spo2": {"$first": "$spo2"}
+            }
+        },
+        {"$sort": {"recorded_datetime": -1}}
+    ]
+    docs = list(db.vital_signs.aggregate(pipeline))
+    for d in docs:
+        d["latest_vital_id"] = str(d["latest_vital_id"])
+    return docs
+
+
+def get_nurse_summary_view(db) -> List[Dict]:
+    pipeline = [
+        {"$sort": {"recorded_datetime": -1}},
+        {
+            "$group": {
+                "_id": "$patient_id",
+                "latest_vital_id": {"$first": "$_id"},
+                "recorded_datetime": {"$first": "$recorded_datetime"},
+                "news2_risk_band": {"$first": "$news2_risk_band"}
+            }
+        },
+        {
+            "$lookup": {
+                "from": "deterioration_alerts",
+                "let": {"pid": "$_id"},
+                "pipeline": [
+                    {"$match": {"$expr": {"$and": [{"$eq": ["$patient_id", "$$pid"]}, {"$eq": ["$status", "Active"]}]}}}
+                ],
+                "as": "active_alerts"
+            }
+        },
+        {
+            "$addFields": {
+                "active_alerts_count": {"$size": "$active_alerts"}
+            }
+        },
+        {"$project": {"active_alerts": 0}}
+    ]
+    docs = list(db.vital_signs.aggregate(pipeline))
+    for d in docs:
+        d["latest_vital_id"] = str(d["latest_vital_id"])
+    return docs

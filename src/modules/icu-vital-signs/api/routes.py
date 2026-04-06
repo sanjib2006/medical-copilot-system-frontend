@@ -18,13 +18,14 @@ from pymongo import MongoClient
 
 # Allow imports from parent directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from database import patients, vitals, alerts
+from database import patients, vitals, alerts, schema_validator
 from database import deterioration as det
 from api.schemas import (
-    VitalSignIngest, ManualEntryRequest,
+    VitalSignIngest, ManualEntryRequest, VitalSignUpdate,
     AlertAcknowledge, AlertIntervention,
     DeteriorationEscalate, DeteriorationResolve,
     DrugAlertWebhook,
+    PatientAdmit, ThresholdRule,
 )
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -50,7 +51,9 @@ app.add_middleware(
 
 # ── DB connection ─────────────────────────────────────────────────────────────
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+from dotenv import load_dotenv
+load_dotenv()
+MONGO_URI = os.getenv("MODULE25_MONGO_URI", os.getenv("MONGO_URI", "mongodb://localhost:27017"))
 _client: Optional[MongoClient] = None
 
 def get_db():
@@ -59,10 +62,68 @@ def get_db():
         _client = MongoClient(MONGO_URI)
     return _client["icu_database"]
 
+@app.on_event("startup")
+def startup_db_initialization():
+    print("Starting ICU Vital Signs Module...")
+    try:
+        db = get_db()
+        vitals.create_indexes(db)
+        alerts.ensure_indexes(db)
+        schema_validator.apply_schema_validators(db)
+    except Exception as e:
+        print(f"Error initializing database: {e}")
 
 # =============================================================================
-# HEALTH
+# PATIENTS
 # =============================================================================
+
+@app.get("/api/icu-vitals/patients", tags=["Patients"])
+def list_patients():
+    """Return all admitted ICU patients."""
+    db = get_db()
+    return patients.get_all_patients(db)
+
+
+@app.post("/api/icu-vitals/patients", tags=["Patients"], status_code=201)
+def admit_patient(body: PatientAdmit):
+    """Admit a new patient to the ICU and assign a monitoring device."""
+    db = get_db()
+    try:
+        inserted_id, doc = patients.insert_patient_with_device(
+            db,
+            body.patient_id, body.first_name, body.last_name or "",
+            body.gender, body.date_of_birth or "",
+            body.device_id, body.device_type,
+            mrn=body.mrn,
+            admission_status=body.admission_status,
+            acuity_level=body.acuity_level,
+            admitting_diagnosis=body.admitting_diagnosis,
+        )
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {
+        "inserted_id": str(inserted_id),
+        "patient": {k: str(v) if not isinstance(v, (str, int, float, bool, dict, list, type(None))) else v
+                    for k, v in doc.items()},
+    }
+
+
+# =============================================================================
+# THRESHOLD RULES
+# =============================================================================
+
+@app.post("/api/icu-vitals/patients/{patient_id}/thresholds", tags=["Alerts"], status_code=200)
+def set_threshold_rule(patient_id: str, body: ThresholdRule):
+    """Create or update a vital sign threshold rule for a patient."""
+    db = get_db()
+    alerts.set_threshold(
+        db, patient_id, body.parameter, body.min_val, body.max_val,
+        adjusted_for_drugs=body.adjusted_for_drugs,
+        adjustment_reason=body.adjustment_reason or "",
+    )
+    return {"saved": True, "patient_id": patient_id, "parameter": body.parameter}
+
+
 
 @app.get("/api/icu-vitals/health", tags=["System"])
 def health_check():
@@ -73,6 +134,17 @@ def health_check():
         return {"status": "ok", "module": "M25-ICU-Vital-Signs", "db": "connected"}
     except Exception as e:
         raise HTTPException(503, f"DB unavailable: {e}")
+
+@app.get("/api/icu-vitals/db-info/server-functions", tags=["System"])
+def get_server_functions():
+    """Returns the JS stored procedures definition."""
+    import os
+    file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "database", "server_functions.js")
+    try:
+        with open(file_path, "r") as f:
+            return {"js_code": f.read()}
+    except Exception as e:
+        raise HTTPException(500, f"Could not read server_functions.js: {e}")
 
 
 # =============================================================================
@@ -175,13 +247,61 @@ def manual_entry(body: ManualEntryRequest):
         pain_score=body.pain_score,
     )
 
+    current_vitals_map = {
+        "heart_rate": body.heart_rate,
+        "systolic_bp": body.systolic_bp,
+        "diastolic_bp": body.diastolic_bp,
+        "temperature": body.temperature,
+        "spo2": body.spo2,
+        "respiratory_rate": body.respiratory_rate,
+        "urine_output_ml_hr": body.urine_output_ml_hr,
+        "news2_score": doc["news2_score"],
+    }
+    triggered_alerts = alerts.evaluate_alert(
+        db, body.patient_id, v_id, current_vitals_map,
+        news2_score=doc["news2_score"]
+    )
+
     return {
         "vital_sign_id": str(v_id),
         "news2_score": doc["news2_score"],
         "news2_risk_band": doc["news2_risk_band"],
         "sofa_score": doc["sofa_score"],
         "deterioration_event_id": doc.get("deterioration_event_id"),
+        "news2": doc.get("news2"),
+        "sofa": doc.get("sofa"),
+        "apache2": doc.get("apache2"),
+        "saps2": doc.get("saps2"),
+        "alerts_triggered": len(triggered_alerts),
+        "alert_ids": triggered_alerts,
     }
+
+@app.put("/api/icu-vitals/vitals/{vital_id}", tags=["Vitals"])
+def update_vital_sign(vital_id: str, body: VitalSignUpdate):
+    db = get_db()
+    update_data = body.dict(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(400, "No fields to update")
+    modified = vitals.update_vital_sign(db, vital_id, update_data)
+    if not modified:
+        raise HTTPException(404, "Vital sign not found")
+    return {"updated": True, "vital_id": vital_id}
+
+@app.delete("/api/icu-vitals/vitals/{vital_id}", tags=["Vitals"])
+def delete_vital_sign(vital_id: str):
+    db = get_db()
+    deleted = vitals.delete_vital_sign(db, vital_id)
+    if not deleted:
+        raise HTTPException(404, "Vital sign not found")
+    return {"deleted": True, "vital_id": vital_id}
+
+@app.get("/api/icu-vitals/patients/{patient_id}/vitals", tags=["Vitals"])
+def get_paginated_vitals(
+    patient_id: str = Path(...), 
+    limit: int = Query(50, ge=1, le=500)
+):
+    db = get_db()
+    return vitals.list_all_vitals(db, patient_id, limit)
 
 
 # =============================================================================
@@ -221,6 +341,20 @@ def get_trends(
     db = get_db()
     data = vitals.get_trends(db, patient_id, interval)
     return {"patient_id": patient_id, "interval": interval, "data": data}
+
+# =============================================================================
+# VIEWS
+# =============================================================================
+
+@app.get("/api/icu-vitals/views/critical-patients", tags=["Views"])
+def critical_patients_view():
+    db = get_db()
+    return vitals.get_critical_patients_view(db)
+
+@app.get("/api/icu-vitals/views/nurse-summary", tags=["Views"])
+def nurse_summary_view():
+    db = get_db()
+    return vitals.get_nurse_summary_view(db)
 
 
 # =============================================================================

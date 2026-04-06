@@ -89,6 +89,20 @@ class ManualEntryRequest(BaseModel):
     recorded_by: Optional[str] = None     # nurse/clinician name
     notes: Optional[str]      = None
 
+class VitalSignUpdate(BaseModel):
+    """PUT /api/icu-vitals/vitals/{vital_id} — partial vital signs update"""
+    systolic_bp: Optional[float] = None
+    diastolic_bp: Optional[float] = None
+    heart_rate: Optional[int] = None
+    respiratory_rate: Optional[int] = None
+    spo2: Optional[float] = None
+    supplemental_oxygen: Optional[bool] = None
+    respiratory_support: Optional[str] = None
+    consciousness_level: Optional[str] = None
+    temperature: Optional[float] = None
+    urine_output_ml_hr: Optional[float] = None
+    pain_score: Optional[int] = None
+
 
 # ---------------------------------------------------------------------------
 # Alert Management
@@ -146,3 +160,36 @@ class DrugAlertWebhook(BaseModel):
     systolic_bp_max: Optional[float] = None
     respiratory_rate_min: Optional[float] = None
     respiratory_rate_max: Optional[float] = None
+
+
+# ---------------------------------------------------------------------------
+# Patient Admission
+# ---------------------------------------------------------------------------
+
+class PatientAdmit(BaseModel):
+    """POST /api/icu-vitals/patients — admit a new ICU patient with device"""
+    patient_id: str
+    first_name: str
+    last_name: Optional[str]          = ""
+    gender: str                        = "Other"
+    date_of_birth: Optional[str]       = None
+    mrn: Optional[str]                 = None
+    device_id: str
+    device_type: str                   = "Multi-parameter Monitor"
+    admission_status: str              = "ICU"
+    acuity_level: int                  = Field(2, ge=1, le=4)
+    admitting_diagnosis: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Threshold Rule
+# ---------------------------------------------------------------------------
+
+class ThresholdRule(BaseModel):
+    """POST /api/icu-vitals/patients/{patient_id}/thresholds"""
+    patient_id: str
+    parameter: str
+    min_val: Optional[float] = None
+    max_val: Optional[float] = None
+    adjusted_for_drugs: bool  = False
+    adjustment_reason: Optional[str] = None
