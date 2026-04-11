@@ -1,7 +1,6 @@
 # dashboards/patient_dashboard.py
 import streamlit as st
 from components.sidebar import sidebar
-from components.charts import patient_line_chart, appointment_donut_chart
 
 # All categories and their modules
 CATEGORIES = {
@@ -133,6 +132,7 @@ def patient_dashboard():
     st.session_state.setdefault("view", "main")
     st.session_state.setdefault("selected_category", None)
     st.session_state.setdefault("selected_module", None)
+    st.session_state.setdefault("_last_sidebar_selection", "Dashboard")
 
     # Sidebar
     selected = sidebar([
@@ -148,15 +148,17 @@ def patient_dashboard():
         "I - Integrated Capstone Projects"
     ])
 
-    # Handle sidebar selection
-    if selected != "Dashboard" and selected in CATEGORIES:
-        st.session_state.selected_category = selected
-        st.session_state.view = "category"
-        st.session_state.selected_module = None
-    elif selected == "Dashboard":
-        st.session_state.view = "main"
-        st.session_state.selected_category = None
-        st.session_state.selected_module = None
+    # Handle sidebar selection — only act when the user actually changes selection
+    if selected != st.session_state._last_sidebar_selection:
+        st.session_state._last_sidebar_selection = selected
+        if selected != "Dashboard" and selected in CATEGORIES:
+            st.session_state.selected_category = selected
+            st.session_state.view = "category"
+            st.session_state.selected_module = None
+        elif selected == "Dashboard":
+            st.session_state.view = "main"
+            st.session_state.selected_category = None
+            st.session_state.selected_module = None
 
     # ROUTER
     if st.session_state.view == "category":
@@ -358,38 +360,58 @@ def show_category_view():
         st.rerun()
 
 def show_module_detail():
+    if not st.session_state.selected_module:
+        st.session_state.view = "category"
+        st.rerun()
+        return
     code, name, desc, tables, records = st.session_state.selected_module
     cat_key = st.session_state.selected_category
-    
+
     # Breadcrumb
     st.markdown(f"Category {cat_key.split('-')[0].strip()} > {name}")
     st.markdown(f"# {name}")
     st.markdown(f"*{desc}*")
-    
-    # Tabs
+
+    # ── E1: render the real ICU Vital Signs frontend inline ──────────────────
+    if code == "E1":
+        import sys, os
+        _icu_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "src", "modules", "icu-vital-signs")
+        )
+        if _icu_dir not in sys.path:
+            sys.path.insert(0, _icu_dir)
+        from icu_vitals import render_icu_vitals
+        render_icu_vitals()
+        st.divider()
+        if st.button("⬅ Back to Modules"):
+            st.session_state.view = "category"
+            st.rerun()
+        return
+
+    # ── Generic tabs for all other modules ───────────────────────────────────
     tab = st.radio("", ["🏠 Home", "🔗 ER Diagram", "📋 Tables", "🔍 SQL Query", "⚡ Triggers", "📊 Output"], horizontal=True)
     st.divider()
-    
+
     if tab == "🏠 Home":
         st.info(f"**{name}** - {desc}")
-        
+
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("### Input Entities")
             st.success("1️⃣ Patient Form")
             st.success("2️⃣ Insurance Details")
             st.success("3️⃣ Emergency Contact")
-        
+
         with col2:
             st.markdown("### Output Entities")
             st.success("1️⃣ Patient Record")
             st.success("2️⃣ Admission Summary")
             st.success("3️⃣ Patient ID")
-    
+
     elif tab == "🔗 ER Diagram":
         st.markdown("### Entity Relationship Diagram")
-        st.image("https://via.placeholder.com/900x500?text=ER+Diagram+for+" + code)
-    
+        st.info(f"ER Diagram for module {code} — diagram not yet uploaded.")
+
     elif tab == "📋 Tables":
         st.markdown("### Database Tables")
         st.table({
@@ -397,7 +419,7 @@ def show_module_detail():
             "Records": [12500, 8900, 6400, 15200, 22100],
             "Status": ["✅ Active", "✅ Active", "✅ Active", "✅ Active", "✅ Active"]
         })
-    
+
     elif tab == "🔍 SQL Query":
         st.markdown("### Sample SQL Queries")
         st.code(f"""
@@ -409,10 +431,10 @@ WHERE p.status = 'active'
 ORDER BY p.admission_date DESC
 LIMIT 100;
 """, language="sql")
-        
+
         if st.button("▶️ Execute Query"):
             st.success("Query executed successfully! 1,234 rows returned.")
-    
+
     elif tab == "⚡ Triggers":
         st.markdown("### Database Triggers")
         st.code(f"""
@@ -423,19 +445,19 @@ FOR EACH ROW
 BEGIN
   INSERT INTO audit_logs (entity_type, entity_id, action, timestamp)
   VALUES ('patient', NEW.patient_id, 'INSERT', NOW());
-  
+
   -- Send notification
   INSERT INTO notifications (user_id, message)
   VALUES (NEW.assigned_doctor, CONCAT('New patient registered: ', NEW.name));
 END;
 """, language="sql")
-    
+
     elif tab == "📊 Output":
         st.markdown("### Module Output")
         st.success("✅ Patient Registered Successfully")
         st.info("📋 Patient ID: PT-2024-001234")
         st.info("📅 Registration Date: January 08, 2026")
-        
+
         st.markdown("#### Generated Records")
         st.json({
             "patient_id": "PT-2024-001234",
@@ -444,7 +466,7 @@ END;
             "admission_date": "2026-01-08",
             "status": "active"
         })
-    
+
     st.divider()
     if st.button("⬅ Back to Modules"):
         st.session_state.view = "category"
