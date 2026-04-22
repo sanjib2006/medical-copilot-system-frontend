@@ -1,3 +1,11 @@
 streamlit
 streamlit-option-menu
 matplotlib
+pymongo
+dnspython
+pandas
+fastapi
+uvicorn[standard]
+pydantic
+requests
+python-dotenv
